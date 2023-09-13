@@ -72,12 +72,6 @@ def get_weather_backup():
 
     return {"weather_type": weather_type, "weather_desc": weather_desc, "temp_current": temp_current, "temp_fl": temp_fl, "max_temp": max_temp, "min_temp": min_temp, "humidity": humidity, "uv_level": uv_level, "uv_desc": uv_desc, "sunset": sunset, "sunrise": sunrise}
 
-# To Xena:
-# I have not written this code yet, but i know that it will be a absolutely horrible implementation of what i want to do and for that, i apoligise. (imma do it anyway)
-
-# After writing:
-# This has really bad ordering but we'll have to talk about it
-
 def celcius_clean(inp):
     return re.sub(r"[^0-9\.]", "", inp)
 

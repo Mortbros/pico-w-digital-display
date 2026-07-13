@@ -19,20 +19,23 @@ new JSON API is restricted to registered users.
 
 - Raspberry Pi Pico W
 - 3.5" 480x320 ILI9488 SPI LCD
-- SPI SD card reader (can be the one built into the LCD module) with a
-  FAT32-formatted SD card
 
-Everything shares one SPI bus, with separate chip-select pins:
+The LCD module's SD card slot is **no longer used**: fonts now live on the
+Pico's internal flash as packed 4-bit glyphs (they were previously raw
+RGB565 on the SD card, but the card shares the SPI bus and is also serviced
+over USB, so every glyph read fought the PC for the bus and drawing was
+extremely slow). Any card left in the slot is ignored; its chip-select is
+held high so it stays off the bus.
 
-| Signal     | Pico pin |
-| ---------- | -------- |
-| SPI SCK    | GP10     |
-| SPI MOSI   | GP11     |
-| SPI MISO   | GP12     |
-| LCD CS     | GP9      |
-| LCD DC     | GP8      |
-| LCD RST    | GP15     |
-| SD card CS | GP22     |
+| Signal                | Pico pin |
+| --------------------- | -------- |
+| SPI SCK               | GP10     |
+| SPI MOSI              | GP11     |
+| SPI MISO              | GP12     |
+| LCD CS                | GP9      |
+| LCD DC                | GP8      |
+| LCD RST               | GP15     |
+| SD card CS (unused)   | GP22     |
 
 ### 1. Flash CircuitPython
 
@@ -55,48 +58,27 @@ matching your CircuitPython major version (e.g. 9.x bundle for 9.x firmware —
 - `adafruit_ntp.mpy`
 - `adafruit_bus_device/`
 
-### 3. Prepare the SD card
+### 3. Copy the application
 
-The font bitmaps are far too large for the Pico's RAM (and would crowd its
-~1 MB flash), so the display streams each glyph from the SD card as it draws.
-`code.py` mounts the card at `/sd` on boot.
+Copy these from the repo to the root of the CIRCUITPY drive:
 
-The SD card is an ordinary FAT32 volume, and there are two ways to get files
-onto it:
-
-- **Through the Pico**: while the card is mounted by `code.py`, CircuitPython
-  (9+) exposes it as a second USB drive next to `CIRCUITPY` (two drive
-  letters, both named after the Pico). Only one side may have write access
-  to a FAT volume, so this drive is only writable from the PC because
-  `code.py` mounts the card `readonly=True` — if it ever shows up
-  write-protected, an older `code.py` on the Pico is holding the write claim
-  (or, in a card reader, the physical lock switch on the card is on).
-- **In a PC card reader**: mounts like any USB stick.
-
-Copy this repo's [sd-card](sd-card) folder contents onto that drive, so the
-card root looks like:
+- `code.py`
+- `glyphs/` — the packed, self-describing font bitmaps (~90 KB), one folder
+  per font:
 
 ```
-E:\
-└── fonts\
-    ├── Roboto50\   # date glyphs
-    ├── Roboto70\   # weather glyphs
-    ├── Roboto82\   # clock glyphs
-    └── Arial14\    # status line glyphs
+CIRCUITPY\glyphs\
+├── Roboto50\   # date glyphs
+├── Roboto70\   # weather glyphs
+├── Roboto82\   # clock glyphs
+└── Arial14\    # status line glyphs
 ```
 
-Each folder holds one raw RGB565 file per character, named by its character
-code (see [Font generation](#font-generation)).
+If an `sd` folder, a `fonts` folder, or other old font copies exist on
+CIRCUITPY from earlier versions, delete them — everything the display needs
+is in the two items above.
 
-### 4. Copy the application
-
-1. Copy `code.py` and the `fonts/` folder (the Python width tables — the
-   bitmaps live on the SD card) from this repo to the root of the CIRCUITPY
-   drive.
-2. Create an empty folder named `sd` in the root of the CIRCUITPY drive
-   (CircuitPython 9 requires the mount point to exist).
-
-### 5. Configure
+### 4. Configure
 
 Create a `settings.toml` in the root of the CIRCUITPY drive (it is
 gitignored, so real credentials never end up in the repo):
@@ -105,7 +87,7 @@ gitignored, so real credentials never end up in the repo):
 CIRCUITPY_WIFI_SSID = "your-wifi-ssid"
 CIRCUITPY_WIFI_PASSWORD = "your-wifi-password"
 
-# Backup weather source, used when BOM scraping fails
+# Backup weather source, used when Open-Meteo is unreachable
 OPENWEATHERMAP_API_KEY = "your-openweathermap-api-key"
 OPENWEATHERMAP_LOCATION = "Melbourne,VIC,AU"
 
@@ -113,7 +95,7 @@ OPENWEATHERMAP_LOCATION = "Melbourne,VIC,AU"
 WEATHER_LATITUDE = "-37.8136"
 WEATHER_LONGITUDE = "144.9631"
 
-# UTC offset in seconds, used when worldtimeapi.org is unreachable (36000 = AEST)
+# UTC offset in seconds, used when the timezone lookup fails (36000 = AEST)
 UTC_OFFSET_FALLBACK = 36000
 
 # Public DNS server to pin (routers sometimes hand out flaky DNS); "" to disable
@@ -124,7 +106,7 @@ STATIC_DNS = "8.8.8.8"
 Only the Wi-Fi keys are required; everything else has the defaults shown above
 baked into `code.py` (the OpenWeatherMap backup is skipped without a key).
 
-### 6. First boot
+### 5. First boot
 
 The Pico runs `code.py` automatically on power-up. The screen shows
 "connecting to Wi-Fi..." then "syncing clock (NTP)..." on the status line,
@@ -138,30 +120,37 @@ every error on the status line is also printed there with full detail.
 Errors are shown on a tiny 14px status line between the clock and the date
 (weather fetch problems, Wi-Fi reconnects, NTP failures). The clock keeps
 running through any failure; weather slots are blank until data is available.
-The status font was generated with Pillow into the SD card format used by the
-display (one raw RGB565 file per character, see `sd-card/fonts/Arial14`).
+
+If something unexpected crashes the program, the full traceback is drawn
+across the whole screen in the tiny font (and printed to serial), stays up
+for 60 seconds, and then the Pico reboots itself — so a frozen display
+always tells you why.
 
 
 ## Font generation
 
-Fonts come in two parts that must stay in sync:
+Each font is a folder in [glyphs/](glyphs) holding one raw file per
+character, named by character code (e.g. `48` for `0`). Every file is
+self-describing: a 2-byte header `[width, bitmap_height]` followed by the
+pixels as 4-bit grayscale — two per byte, high nibble first, row-major, rows
+padded to whole bytes, white on black. `code.py` reads all font metrics from
+these headers at boot and expands the pixels to RGB565 through a lookup
+table while drawing, so a glyph's drawn width can never disagree with its
+bitmap (a mismatch there shears the image diagonally — the cause of a
+long-standing rendering glitch).
 
-- **Bitmaps on the SD card** ([sd-card/fonts](sd-card/fonts)): one raw file
-  per character, named by character code (e.g. `48` for `0`). Each file is
-  `width x bitmap_height` pixels of big-endian RGB565, row-major, white on
-  black. The display copies a file straight to the LCD to draw a character.
-- **Width tables on the Pico** ([fonts/](fonts)): a small Python module per
-  font (`name`, `height`, `bitmap_height`, and a `width` dict mapping
-  character code to pixel width) that `code.py` uses for layout.
+New fonts can be generated with [tools/generate_font.py](tools/generate_font.py)
+(Pillow-based, run on a PC) — see the examples in its docstring.
 
-All fonts can be (re)generated with [tools/generate_font.py](tools/generate_font.py)
-(Pillow-based, run on a PC), which writes both parts at once — see the
-examples in its docstring. All three Roboto sets use 85px-tall bitmaps
-(`bitmap_height = 85`) with the glyph drawn in the top `height` rows; the
-"size" in the folder name is the nominal size used for layout. The bitmaps
-are checked into [sd-card/fonts](sd-card/fonts), so a fresh SD card only
-needs the folder copied over — regeneration is only needed for new fonts,
-sizes, or characters.
+The Roboto70 and Roboto82 sets are rendered from
+[tools/Roboto-Regular-Custom-Icons.ttf](tools/Roboto-Regular-Custom-Icons.ttf)
+— Roboto Regular with the custom weather icons drawn into the arrow
+codepoints (`↑←↕↔` etc.) — scaled to match the geometry of the original
+bitmaps (which were horizontally condensed relative to the raw font). The
+originals live in the legacy [sd-card/fonts](sd-card/fonts) folder; several
+of them (most Roboto82 characters and the Roboto70 digits 5-8) were corrupt
+at source, which caused years of mystery rendering glitches, so everything
+except Roboto50 and Arial14 was regenerated from the TTF in July 2026.
 
 (Historical note: the original Roboto bitmaps were produced with
 [micropython-font-to-py](https://github.com/peterhinch/micropython-font-to-py)

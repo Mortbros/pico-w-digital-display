@@ -1,8 +1,11 @@
-"""Generate a font in the display's SD-card format (run on a PC).
+"""Generate a font in the display's packed glyph format (run on a PC).
 
-Produces one raw file per character (RGB565 big-endian, row-major, white on
-black) in sd-card/fonts/<Name><height>/, plus a width-table module in
-fonts/<Name><height>.py for code.py to import.
+Produces one raw file per character in glyphs/<Name><height>/. Each file is
+self-describing: a 2-byte header [width, bitmap_height] followed by 4-bit
+grayscale pixels — two per byte (high nibble = left pixel), row-major, rows
+padded to whole bytes, white on black. code.py reads all metrics from these
+headers at boot, so there is nothing else to keep in sync. The glyphs folder
+is copied to the root of the CIRCUITPY drive.
 
 Requires: pip install pillow
 
@@ -11,11 +14,10 @@ Examples (from the repo root):
     # 14px status font from Arial
     python tools/generate_font.py C:/Windows/Fonts/arial.ttf --height 14
 
-    # The three display fonts from Roboto (fonts.google.com/specimen/Roboto).
-    # bitmap-height 85 matches the row height code.py draws these fonts at.
-    python tools/generate_font.py Roboto-Regular.ttf --name Roboto --height 82 --bitmap-height 85 --charset "0123456789:"
-    python tools/generate_font.py Roboto-Regular.ttf --name Roboto --height 70 --bitmap-height 85 --charset "0123456789%↑↓←→↔↕"
-    python tools/generate_font.py Roboto-Regular.ttf --name Roboto --height 50 --bitmap-height 85 --charset "0123456789MonTueWdhFriSat/ "
+    # The three display fonts from Roboto (fonts.google.com/specimen/Roboto)
+    python tools/generate_font.py Roboto-Regular.ttf --name Roboto --height 82 --charset "0123456789:"
+    python tools/generate_font.py Roboto-Regular.ttf --name Roboto --height 70 --charset "0123456789%↑↓←→↔↕"
+    python tools/generate_font.py Roboto-Regular.ttf --name Roboto --height 50 --charset "0123456789MonTueWdhFriSat/ "
 """
 
 import argparse
@@ -38,37 +40,32 @@ def largest_fitting_size(font_path, height):
 
 
 def generate(font_path, name, height, bitmap_height, charset):
-    out_bitmaps = os.path.join(REPO_ROOT, "sd-card", "fonts", f"{name}{height}")
-    out_module = os.path.join(REPO_ROOT, "fonts", f"{name}{height}.py")
+    out_glyphs = os.path.join(REPO_ROOT, "glyphs", f"{name}{height}")
 
     size = largest_fitting_size(font_path, height)
     font = ImageFont.truetype(font_path, size)
 
-    os.makedirs(out_bitmaps, exist_ok=True)
-    widths = {}
+    os.makedirs(out_glyphs, exist_ok=True)
+    count = 0
     for ch in sorted(set(charset)):
         w = max(2, round(font.getlength(ch)))
         # Glyph drawn at the top; any extra rows up to bitmap_height stay black
         img = Image.new("L", (w, bitmap_height), 0)
         ImageDraw.Draw(img).text((0, 0), ch, font=font, fill=255)
-        buf = bytearray()
+        rowbytes = (w + 1) // 2
+        packed = bytearray(2 + rowbytes * bitmap_height)
+        packed[0] = w
+        packed[1] = bitmap_height
         for y in range(bitmap_height):
             for x in range(w):
-                g = img.getpixel((x, y))
-                rgb565 = ((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3)
-                buf.append((rgb565 >> 8) & 0xFF)
-                buf.append(rgb565 & 0xFF)
-        with open(os.path.join(out_bitmaps, str(ord(ch))), "wb") as fh:
-            fh.write(bytes(buf))
-        widths[ord(ch)] = w
+                level = (img.getpixel((x, y)) * 15 + 127) // 255
+                i = 2 + y * rowbytes + x // 2
+                packed[i] |= level << 4 if x % 2 == 0 else level
+        with open(os.path.join(out_glyphs, str(ord(ch))), "wb") as fh:
+            fh.write(bytes(packed))
+        count += 1
 
-    with open(out_module, "w", newline="\n") as fh:
-        fh.write(f'name = "{name}"\nheight = {height}\nbitmap_height = {bitmap_height}\n')
-        fh.write(f"width = {dict(sorted(widths.items()))!r}\n")
-
-    print(f"{name}{height}: point size {size}, {len(widths)} glyphs")
-    print(f"  bitmaps -> {out_bitmaps}")
-    print(f"  widths  -> {out_module}")
+    print(f"{name}{height}: point size {size}, {count} glyphs -> {out_glyphs}")
 
 
 def main():

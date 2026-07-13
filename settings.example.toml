@@ -5,5 +5,12 @@ CIRCUITPY_WIFI_PASSWORD = "your-wifi-password"
 OPENWEATHERMAP_API_KEY = "your-openweathermap-api-key"
 OPENWEATHERMAP_LOCATION = "Melbourne,VIC,AU"
 
+# Location for the primary weather source, Open-Meteo
+WEATHER_LATITUDE = "-37.8136"
+WEATHER_LONGITUDE = "144.9631"
+
 # UTC offset in seconds, used when worldtimeapi.org is unreachable (36000 = AEST)
 UTC_OFFSET_FALLBACK = 36000
+
+# Public DNS server to pin (routers sometimes hand out flaky DNS); "" to disable
+STATIC_DNS = "8.8.8.8"

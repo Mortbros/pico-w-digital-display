@@ -1,13 +1,3 @@
-# pico-w-digital-display
-A raspberry pi pico w powered digital clock and information display.
-
-The main code powering the display can be found [here](code.py)
-
-## Setup
-
-Create a `settings.toml` in the root of the CIRCUITPY drive (it is gitignored, so real credentials never end up in the repo):
-
-```toml
 CIRCUITPY_WIFI_SSID = "your-wifi-ssid"
 CIRCUITPY_WIFI_PASSWORD = "your-wifi-password"
 
@@ -17,4 +7,3 @@ OPENWEATHERMAP_LOCATION = "Melbourne,VIC,AU"
 
 # UTC offset in seconds, used when worldtimeapi.org is unreachable (36000 = AEST)
 UTC_OFFSET_FALLBACK = 36000
-```

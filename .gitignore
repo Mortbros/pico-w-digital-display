@@ -1,0 +1,3 @@
+# Contains Wi-Fi credentials and API keys
+settings.toml
+*.pyc

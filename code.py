@@ -20,6 +20,7 @@ import ipaddress
 import os
 import ssl
 import time
+import traceback
 
 from adafruit_bus_device.spi_device import SPIDevice
 import adafruit_ntp
@@ -444,6 +445,44 @@ def ticking_sleep(seconds):
         time.sleep(0.2)
 
 
+def show_crash(text):
+    """Fill the screen with a crash report in the tiny font."""
+    try:
+        lcd.rect(0, 0, 480, 320, BLACK)
+        y = 2
+        line = ""
+        for c in text:
+            if c == "\n" or get_rendered_width(line + c, Arial14) > 476:
+                lcd.print(line, "", 0, y, 480, Arial14)
+                y += 16
+                line = "" if c == "\n" else c
+                if y > 320 - Arial14.bitmap_height:
+                    return
+            else:
+                line += c
+        if line:
+            lcd.print(line, "", 0, y, 480, Arial14)
+    except Exception as e:
+        print("Could not draw crash screen:", e)
+
+
+def crash(e):
+    """Show an unexpected error on screen and serial, then reboot, so the
+    display never freezes without an explanation."""
+    try:
+        try:
+            text = "".join(traceback.format_exception(e))
+        except TypeError:  # older CircuitPython wants the 3-argument form
+            text = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+    except Exception:
+        text = repr(e)
+    print("Unexpected error, rebooting in 60s:")
+    print(text)
+    show_crash("CRASHED - rebooting in 60s\n" + text)
+    time.sleep(60)
+    supervisor.reload()
+
+
 # --- Networking ---------------------------------------------------------------
 
 
@@ -585,19 +624,22 @@ sd_cs.value = True
 lcd = ILI9488(spi, board.GP9, board.GP15, board.GP8)
 lcd.rect(0, 0, 480, 320, BLACK)
 
-set_status("connecting to Wi-Fi...")
-connect_wifi()
+try:
+    set_status("connecting to Wi-Fi...")
+    connect_wifi()
 
-pool = socketpool.SocketPool(wifi.radio)
-session = adafruit_requests.Session(pool, ssl.create_default_context())
-ntp = adafruit_ntp.NTP(pool, server="pool.ntp.org", tz_offset=0)
+    pool = socketpool.SocketPool(wifi.radio)
+    session = adafruit_requests.Session(pool, ssl.create_default_context())
+    ntp = adafruit_ntp.NTP(pool, server="pool.ntp.org", tz_offset=0)
 
-set_status("syncing clock (NTP)...")
-while not sync_clock():
-    set_status("NTP sync failed, retrying...")
-    ticking_sleep(30)
-clock_synced = True
-set_status("")
+    set_status("syncing clock (NTP)...")
+    while not sync_clock():
+        set_status("NTP sync failed, retrying...")
+        ticking_sleep(30)
+    clock_synced = True
+    set_status("")
+except Exception as e:
+    crash(e)
 
 next_weather_sync = time.monotonic()  # fetch on the first loop pass
 next_ntp_sync = time.monotonic() + NTP_INTERVAL
@@ -623,7 +665,5 @@ while True:
         time.sleep(0.1)
     except Exception as e:
         # Network problems are handled inside the fetch functions, so anything
-        # that lands here is unexpected; reboot rather than freeze.
-        print("Unexpected error, reloading:", e)
-        time.sleep(5)
-        supervisor.reload()
+        # that lands here is unexpected; show it on screen, then reboot.
+        crash(e)

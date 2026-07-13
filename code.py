@@ -27,14 +27,8 @@ import adafruit_requests
 import board
 import busio
 import digitalio
-from fonts import Arial14
-from fonts import Roboto50
-from fonts import Roboto70
-from fonts import Roboto82
 import rtc
-import sdcardio
 import socketpool
-import storage
 import supervisor
 import wifi
 
@@ -73,7 +67,7 @@ WEATHER_INTERVAL = 1 * 60 * 60
 WEATHER_RETRY_INTERVAL = 5 * 60  # retry sooner when the last fetch had problems
 NTP_INTERVAL = 24 * 60 * 60  # re-sync the RTC daily to correct drift
 
-REQUEST_TIMEOUT = 10
+REQUEST_TIMEOUT = 5  # keep short: the clock display stalls during a request
 REQUEST_RETRIES = 3
 
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -100,6 +94,71 @@ def rgb565(color):
 
 BLACK = rgb565((0, 0, 0))
 
+# Glyphs are stored on the CIRCUITPY flash in /glyphs as packed 4-bit
+# grayscale (two pixels per byte, row-major, rows padded to whole bytes) and
+# expanded to RGB565 through a lookup table while drawing. They used to be
+# raw RGB565 on the SD card, but the SD card shares the SPI bus and is also
+# exposed to the PC over USB, so every glyph read fought the PC's card
+# access and drawing crawled.
+GRAY4_TABLE = []
+for _b in range(256):
+    _chunk = bytearray(4)
+    _v = rgb565(((_b >> 4) * 17,) * 3)
+    _chunk[0] = _v >> 8
+    _chunk[1] = _v & 0xFF
+    _v = rgb565(((_b & 0x0F) * 17,) * 3)
+    _chunk[2] = _v >> 8
+    _chunk[3] = _v & 0xFF
+    GRAY4_TABLE.append(bytes(_chunk))
+
+GLYPH_BUF = bytearray(64 * 82 * 2 + 4)  # largest expanded glyph + spill slack
+PACKED_BUF = bytearray(32 * 82)  # largest packed glyph
+HDR_BUF = bytearray(2)
+
+
+class Font:
+    """A folder of self-describing glyph files: a 2-byte [width,
+    bitmap_height] header followed by packed 4-bit grayscale rows. Widths
+    and heights come from the files themselves, so the metrics used to draw
+    a glyph can never disagree with its bitmap."""
+
+    def __init__(self, path):
+        self.path = path
+        self.width = {}
+        self.bitmap_height = 0
+        hdr = bytearray(2)
+        try:
+            names = os.listdir(path)
+        except OSError:
+            names = []
+        for fname in names:
+            try:
+                code = int(fname)
+            except ValueError:
+                continue
+            full = f"{path}/{fname}"
+            try:
+                with open(full, "rb") as f:
+                    f.readinto(hdr)
+                w, h = hdr[0], hdr[1]
+                # catches truncated/corrupted copies at boot
+                if os.stat(full)[6] != 2 + ((w + 1) // 2) * h:
+                    print("corrupt glyph file (size mismatch):", full)
+                    continue
+            except OSError:
+                continue
+            self.width[code] = w
+            if h > self.bitmap_height:
+                self.bitmap_height = h
+        if not self.width:
+            print(f"No glyphs found in {path} - copy glyphs/ to CIRCUITPY")
+
+
+Arial14 = Font("/glyphs/Arial14")
+Roboto50 = Font("/glyphs/Roboto50")
+Roboto70 = Font("/glyphs/Roboto70")
+Roboto82 = Font("/glyphs/Roboto82")
+
 
 def char_metrics(c, font):
     """Return (ord, width) for a character, falling back to the opposite case,
@@ -110,7 +169,7 @@ def char_metrics(c, font):
     swapped = ord(c.lower() if c.isupper() else c.upper())
     if swapped in font.width:
         return swapped, font.width[swapped]
-    return 48, font.width[48]
+    return 48, font.width.get(48, 0)
 
 
 def get_rendered_width(text, font):
@@ -255,6 +314,45 @@ class ILI9488:
         if rest != 0:
             self.write_data(memoryview(self.buffer)[: rest * 2])
 
+    def draw_char(self, char_ord, char_width, x, y, font):
+        """Expand a packed 4-bit glyph into RGB565 and send it to the panel."""
+        h = font.bitmap_height
+        rowbytes = (char_width + 1) // 2
+        size = rowbytes * h
+        if size == 0:
+            return
+        mv = memoryview(PACKED_BUF)
+        filled = 0
+        try:
+            with open(f"{font.path}/{char_ord}", "rb") as f:
+                f.readinto(HDR_BUF)  # skip the [width, height] header
+                # readinto may not fill a large buffer in one call; a partial
+                # read would leave the previous glyph's bytes in the tail
+                while filled < size:
+                    n = f.readinto(mv[filled:size])
+                    if not n:
+                        break
+                    filled += n
+        except OSError:
+            pass
+        if filled < size:
+            # missing/short file: blank the rest rather than draw stale data
+            for k in range(filled, size):
+                PACKED_BUF[k] = 0
+        src = 0
+        dst = 0
+        for _ in range(h):
+            d = dst
+            for _ in range(rowbytes):
+                # An odd-width row spills 2 bytes past the row end; the next
+                # row (or the buffer slack) overwrites it, so no harm done
+                GLYPH_BUF[d : d + 4] = GRAY4_TABLE[PACKED_BUF[src]]
+                src += 1
+                d += 4
+            dst += 2 * char_width
+        self.set_block(x, y, x + char_width, y + h)
+        self.write_data(memoryview(GLYPH_BUF)[: 2 * char_width * h])
+
     def print(self, text, old_text, x, y, width, font):
         """Draw text, redrawing only from the first character that changed."""
         cursor = x
@@ -263,13 +361,7 @@ class ILI9488:
             if text[i] != old_text_pad[i]:
                 for j in range(i, len(text)):
                     char_ord, char_width = char_metrics(text[j], font)
-                    self.set_block(
-                        cursor, y, cursor + char_width, y + font.bitmap_height
-                    )
-                    with open(
-                        f"/sd/fonts/{font.name}{font.height}/{char_ord}", "rb"
-                    ) as f:
-                        self.write_data(f.read())
+                    self.draw_char(char_ord, char_width, cursor, y, font)
                     cursor += char_width
                 # Blank out whatever the old (possibly longer) text left behind
                 self.rect(cursor, y, x + width, y + font.bitmap_height, BLACK)
@@ -340,8 +432,8 @@ def set_status(msg):
             lcd.rect(0, STATUS_Y, 480, STATUS_Y + Arial14.bitmap_height, BLACK)
         status_old = msg
     except OSError as e:
-        # Arial14 bitmaps not copied to /sd/fonts yet; serial print still works
-        print("status font missing from /sd/fonts/Arial14:", e)
+        # Arial14 glyphs not copied to CIRCUITPY yet; serial print still works
+        print("status font missing from /glyphs/Arial14:", e)
 
 
 def ticking_sleep(seconds):
@@ -483,24 +575,12 @@ def refresh_weather():
 
 spi = busio.SPI(board.GP10, board.GP11, board.GP12)
 
-sdcard = sdcardio.SDCard(spi, board.GP22)
-vfs = storage.VfsFat(sdcard)
-# readonly: we only ever read fonts from the card, and CircuitPython exposes
-# the card as a second USB drive on the PC — only one side may have write
-# access, so mounting read-only here is what makes the card writable from
-# the PC.
-try:
-    storage.mount(vfs, "/sd", readonly=True)
-except RuntimeError:
-    # CircuitPython 9+ requires the mount point directory to exist on CIRCUITPY
-    try:
-        os.mkdir("/sd")
-    except OSError:
-        # Flash is read-only to code while USB is connected, so we can't
-        # create it ourselves here
-        print("Create an empty folder named 'sd' on the CIRCUITPY drive")
-        raise
-    storage.mount(vfs, "/sd", readonly=True)
+# The SD card slot shares the SPI bus but is no longer used (glyphs live on
+# the internal flash now); hold its chip-select high so a card left in the
+# slot can't interfere with the bus.
+sd_cs = digitalio.DigitalInOut(board.GP22)
+sd_cs.direction = digitalio.Direction.OUTPUT
+sd_cs.value = True
 
 lcd = ILI9488(spi, board.GP9, board.GP15, board.GP8)
 lcd.rect(0, 0, 480, 320, BLACK)

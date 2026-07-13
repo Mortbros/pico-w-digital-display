@@ -169,6 +169,10 @@ sizes, or characters.
 conversion step to the raw per-character files that is now lost;
 `generate_font.py` replaces that whole pipeline.)
 
+### Note about custom icons
+
+The currently committed Roboto70 font ttf file source file was modified to include icons instead of the `↑←↕↔` icons. Regenerating this font will not replicate these icons.
+
 ## Other
 
 [https://www.instructables.com/RPi-Pico-35-Inch-320x480-HVGA-TFT-LCD-ILI9488-Bitm/](https://www.instructables.com/RPi-Pico-35-Inch-320x480-HVGA-TFT-LCD-ILI9488-Bitm/)

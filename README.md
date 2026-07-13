@@ -18,3 +18,14 @@ OPENWEATHERMAP_LOCATION = "Melbourne,VIC,AU"
 # UTC offset in seconds, used when worldtimeapi.org is unreachable (36000 = AEST)
 UTC_OFFSET_FALLBACK = 36000
 ```
+
+
+## Font generation
+
+[https://github.com/peterhinch/micropython-font-to-py](https://github.com/peterhinch/micropython-font-to-py)
+
+`python font_to_py.py test1.ttf 85 font_test.py -x -c {CHARSET}`
+
+## Other
+
+[https://www.instructables.com/RPi-Pico-35-Inch-320x480-HVGA-TFT-LCD-ILI9488-Bitm/](https://www.instructables.com/RPi-Pico-35-Inch-320x480-HVGA-TFT-LCD-ILI9488-Bitm/)

@@ -166,15 +166,15 @@ class RegexScraper:
 
 def scrape_html(url, scrapers, data_to_modify):
     changes = []
-    response = session.get(
+    with session.get(
         url, headers=BOM_HEADERS, stream=True, timeout=REQUEST_TIMEOUT
-    )
-    for chunk in response.iter_content(chunk_size=32768):
-        for scraper in scrapers:
-            found = scraper.find(chunk)
-            if found:
-                changes.append((scraper.tied_to, round(float(found))))
-    response.close()
+    ) as response:
+        for chunk in response.iter_content(chunk_size=32768):
+            for scraper in scrapers:
+                found = scraper.find(chunk)
+                if found:
+                    changes.append((scraper.tied_to, round(float(found))))
+    gc.collect()
 
     # Applying changes after the loop; updating the dict inside it did not stick
     for key, val in changes:
@@ -183,13 +183,6 @@ def scrape_html(url, scrapers, data_to_modify):
 
 def scrape_brunswick(output):
     """Scrape current/low/high temps from the Brunswick BOM data page into output."""
-    response = session.get(
-        "http://www.bom.gov.au/places/vic/brunswick",
-        headers=BOM_HEADERS,
-        stream=True,
-        timeout=REQUEST_TIMEOUT,
-    )
-
     inside_summary_re = re.compile(r'id="summary-1"')
     current_temp_re = re.compile(r'class="airT">(\d+\.?\d+)')
     low_high_container_re = re.compile(r'class="extT"')
@@ -199,62 +192,67 @@ def scrape_brunswick(output):
     inside_summary = False
     low_high_container_occurrences = 0
 
-    for chunk in response.iter_content(chunk_size=32768):
-        lines = chunk.split(b"\n")
+    with session.get(
+        "http://www.bom.gov.au/places/vic/brunswick",
+        headers=BOM_HEADERS,
+        stream=True,
+        timeout=REQUEST_TIMEOUT,
+    ) as response:
+        for chunk in response.iter_content(chunk_size=32768):
+            lines = chunk.split(b"\n")
 
-        for i, line in enumerate(lines[0:-1]):
-            if i == 0:
-                line = last_line + line
-            if re.search(inside_summary_re, line):
-                inside_summary = True
-            if not inside_summary:
-                continue
+            for i, line in enumerate(lines[0:-1]):
+                if i == 0:
+                    line = last_line + line
+                if re.search(inside_summary_re, line):
+                    inside_summary = True
+                if not inside_summary:
+                    continue
 
-            current = re.search(current_temp_re, line)
-            if (
-                current and output["current_today"] == MISSING
-            ):  # capture current temp only once
-                output["current_today"] = round(float(current.group(1)))
+                current = re.search(current_temp_re, line)
+                if (
+                    current and output["current_today"] == MISSING
+                ):  # capture current temp only once
+                    output["current_today"] = round(float(current.group(1)))
 
-            # The low/high values span several lines, so glue the next few on
-            if re.search(low_high_temp_re, line) and i < (len(lines) - 1 - 5):
-                line = (
-                    line
-                    + lines[i + 1]
-                    + lines[i + 2]
-                    + lines[i + 3]
-                    + lines[i + 4]
-                    + lines[i + 5]
-                )
+                # The low/high values span several lines, so glue the next few on
+                if re.search(low_high_temp_re, line) and i < (len(lines) - 1 - 5):
+                    line = (
+                        line
+                        + lines[i + 1]
+                        + lines[i + 2]
+                        + lines[i + 3]
+                        + lines[i + 4]
+                        + lines[i + 5]
+                    )
 
-            if re.search(low_high_container_re, line):
-                low_high_container_occurrences += 1
+                if re.search(low_high_container_re, line):
+                    low_high_container_occurrences += 1
 
-            low_high = re.search(low_high_temp_re, line)
-            if (
-                low_high
-                and low_high_container_occurrences == 1
-                and output["low_today"] == MISSING
-            ):
-                output["low_today"] = round(float(low_high.group(1)))
-            elif (
-                low_high
-                and low_high_container_occurrences == 2
-                and output["high_today"] == MISSING
-            ):
-                output["high_today"] = round(float(low_high.group(1)))
+                low_high = re.search(low_high_temp_re, line)
+                if (
+                    low_high
+                    and low_high_container_occurrences == 1
+                    and output["low_today"] == MISSING
+                ):
+                    output["low_today"] = round(float(low_high.group(1)))
+                elif (
+                    low_high
+                    and low_high_container_occurrences == 2
+                    and output["high_today"] == MISSING
+                ):
+                    output["high_today"] = round(float(low_high.group(1)))
 
-            if MISSING not in (
-                output["current_today"],
-                output["low_today"],
-                output["high_today"],
-            ):
-                inside_summary = False
+                if MISSING not in (
+                    output["current_today"],
+                    output["low_today"],
+                    output["high_today"],
+                ):
+                    inside_summary = False
 
-        last_line = lines[-1]
-        gc.collect()
-
-    response.close()
+            last_line = lines[-1]
+            gc.collect()
+    gc.collect()
 
 
 def get_weather():
